@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Sentinel-2 影像浏览</title>
+  </head>
+  <body class="h-screen overflow-hidden bg-stone-50 font-sans text-[13px] text-stone-800 accent-sulu-500">
+    <!-- MapLibre 会给地图容器设 position: relative，定位放在外层 -->
+    <main class="fixed inset-0"><div id="map" class="starfield size-full"></div></main>
+    <div class="pointer-events-none fixed top-2.5 left-2.5 z-10 flex max-w-[calc(100%-1.25rem)] items-stretch gap-2.5">
+      <header
+        class="pointer-events-auto flex flex-none items-center gap-3 rounded-lg bg-white/95 py-2.5 pr-2.5 pl-4 shadow-sm ring-1 ring-stone-200"
+      >
+        <h1 class="text-lg font-semibold text-sulu-800">Sentinel-2 影像浏览</h1>
+        <button
+          id="about-open"
+          title="关于"
+          aria-label="关于"
+          class="flex size-7 flex-none cursor-pointer items-center justify-center rounded-full border border-sulu-400 font-serif text-base font-semibold text-sulu-700 italic hover:bg-sulu-50"
+        >
+          i
+        </button>
+      </header>
+      <div
+        id="info"
+        class="pointer-events-auto flex min-w-0 items-center gap-2.5 rounded-lg bg-white/95 pr-3 pl-2.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200"
+      >
+        <!-- 是否处于影像检索与显示的缩放范围，只用图标表示 -->
+        <span data-zoom class="flex size-7 flex-none items-center justify-center rounded-full transition-colors">
+          <svg viewBox="0 0 24 24" class="size-4.5 fill-none stroke-current stroke-[1.6]" aria-hidden="true">
+            <g transform="rotate(-45 12 12)">
+              <rect x="9.5" y="9" width="5" height="6" rx="1" />
+              <rect x="2.5" y="10" width="5" height="4" />
+              <rect x="16.5" y="10" width="5" height="4" />
+              <path d="M7.5 12h2M14.5 12h2" />
+            </g>
+            <path d="M14.5 19.5a5 5 0 0 0 5-5" stroke-linecap="round" />
+          </svg>
+        </span>
+        <i data-spin class="size-3.5 flex-none animate-spin rounded-full border-2 border-sulu-200 border-t-sulu-600"></i>
+        <div class="min-w-0">
+          <div data-text class="truncate text-[13px] font-medium text-stone-800"></div>
+          <div data-detail class="truncate text-[11px] text-stone-500 tabular-nums empty:hidden"></div>
+        </div>
+      </div>
+    </div>
+    <section
+      id="timeline"
+      class="fixed bottom-9 left-1/2 z-10 w-[44rem] max-w-[calc(100%-1.25rem)] -translate-x-1/2 rounded-lg bg-white/95 px-3 pt-1.5 pb-0.5 shadow-sm ring-1 ring-stone-200"
+    ></section>
+    <dialog
+      id="about"
+      class="m-auto w-[30rem] max-w-[calc(100vw-2rem)] rounded-lg p-0 text-[13px] text-stone-800 shadow-xl backdrop:bg-stone-900/30"
+    >
+      <div class="flex items-center border-b border-stone-200 px-4">
+        <div role="tablist" class="flex gap-4">
+          <button role="tab" data-tab="about" aria-selected="true" class="about-tab">关于</button>
+          <button role="tab" data-tab="data" aria-selected="false" class="about-tab">数据</button>
+        </div>
+        <button
+          id="about-close"
+          aria-label="关闭"
+          class="ml-auto cursor-pointer rounded px-1.5 text-lg leading-none text-stone-500 hover:bg-stone-100"
+        >
+          ×
+        </button>
+      </div>
+      <section data-panel="about" class="space-y-2 px-4 py-3 leading-relaxed">
+        <p>
+          浏览 Sentinel-2 L2A 10 米真彩色影像，按日期查看历史存档，并叠加 ESA 采集计划、卫星扫描带、海图标志与航路。
+        </p>
+        <p class="text-stone-500">
+          作者: Clow &lt;<a class="about-link" href="mailto:cevenizlow@gmail.com">cevenizlow@gmail.com</a>&gt; © 2026 C410
+        </p>
+        <p id="about-version" class="text-xs text-stone-400 tabular-nums"></p>
+      </section>
+      <section data-panel="data" hidden class="px-4 py-3">
+        <dl class="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 leading-relaxed">
+          <dt class="text-stone-500">影像</dt>
+          <dd>
+            Contains modified Copernicus Sentinel data，经
+            <a class="about-link" href="https://element84.com/earth-search/" target="_blank" rel="noopener">Earth Search by Element 84</a>
+            检索，像元取自 AWS Open Data 的 sentinel-cogs 存档
+          </dd>
+          <dt class="text-stone-500">底图</dt>
+          <dd>
+            <a class="about-link" href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a>，©
+            <a class="about-link" href="https://openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a>，数据 ©
+            <a class="about-link" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
+            contributors，ODbL
+          </dd>
+          <dt class="text-stone-500">国界</dt>
+          <dd>
+            按中国视角绘制，取自
+            <a class="about-link" href="https://www.naturalearthdata.com/" target="_blank" rel="noopener">Natural Earth</a>
+            1:1000 万数据，南海十段线取自
+            <a class="about-link" href="https://github.com/cnmetlab/cnmaps-data" target="_blank" rel="noopener">cnmaps-data</a>，MIT
+          </dd>
+          <dt class="text-stone-500">海图标志</dt>
+          <dd>
+            © <a class="about-link" href="https://www.openseamap.org/" target="_blank" rel="noopener">OpenSeaMap</a>
+            contributors，CC BY-SA 2.0
+          </dd>
+          <dt class="text-stone-500">采集计划</dt>
+          <dd>
+            <a
+              class="about-link"
+              href="https://sentinels.copernicus.eu/copernicus/sentinel-2/acquisition-plans"
+              target="_blank"
+              rel="noopener"
+              >ESA Sentinel-2 Acquisition Plans</a
+            >
+          </dd>
+          <dt class="text-stone-500">扫描带</dt>
+          <dd>
+            <a class="about-link" href="https://celestrak.org/" target="_blank" rel="noopener">CelesTrak</a>
+            发布的 TLE 轨道根数，按 SGP4 推算
+          </dd>
+          <dt class="text-stone-500">大洋航路</dt>
+          <dd>
+            <a class="about-link" href="https://github.com/newzealandpaul/Shipping-Lanes" target="_blank" rel="noopener"
+              >newzealandpaul/Shipping-Lanes</a
+            >，CC BY 4.0；苏伊士运河段按 OpenStreetMap 运河中心线校正
+          </dd>
+          <dt class="text-stone-500">北极航道</dt>
+          <dd>
+            <a class="about-link" href="https://github.com/eurostat/searoute" target="_blank" rel="noopener">Eurostat MARNET</a>，EUPL-1.2，部分段按公开资料人工数字化；通航情况参考
+            PAME Arctic Ship Traffic Data
+          </dd>
+        </dl>
+      </section>
+    </dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "sentinel2-imagery-viewer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel -r dev",
+    "build": "pnpm -r build",
+    "release": "bash deploy/deploy.sh"
+  }
+}

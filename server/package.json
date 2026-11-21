@@ -1,0 +1,23 @@
+{
+  "name": "@sentinel2/server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "NODE_USE_ENV_PROXY=1 tsx watch src/index.ts",
+    "build": "tsc --noEmit && node build.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.11",
+    "geotiff": "3.0.5",
+    "hono": "^4.13.19",
+    "proj4": "2.23.0",
+    "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,42 @@
+# Sentinel-2 影像浏览站点，由 deploy/deploy.sh 安装到 /etc/caddy/sites/
+sentinel2.c410.space {
+	# 自定义匹配会替换默认类型列表，前几项为 Caddy 默认值；
+	# 其后补上 GeoJSON、KML 与矢量瓦片，STAC 检索与采集计划 KML 未压缩时动辄数 MB
+	encode zstd gzip {
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xhtml+xml*
+			header Content-Type application/atom+xml*
+			header Content-Type application/rss+xml*
+			header Content-Type application/wasm*
+			header Content-Type image/svg+xml*
+			header Content-Type application/geo+json*
+			header Content-Type application/vnd.google-earth.kml+xml*
+			header Content-Type application/vnd.mapbox-vector-tile*
+			header Content-Type application/x-protobuf*
+		}
+	}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	handle {
+		root * /srv/sentinel2/web
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+		@entry path / /index.html
+		header @entry Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/sentinel2.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+	}
+}
