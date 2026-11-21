@@ -1,0 +1,27 @@
+[Unit]
+Description=Sentinel-2 viewer API with upstream cache
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+CacheDirectory=sentinel2
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+Environment=CACHE_DIR=/var/cache/sentinel2
+Environment=CACHE_COG_GB=20
+Environment=CACHE_TILES_GB=4
+Environment=CACHE_META_GB=1
+ExecStart=/opt/node/bin/node /srv/sentinel2/server/index.mjs
+Restart=on-failure
+RestartSec=3
+MemoryMax=700M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
