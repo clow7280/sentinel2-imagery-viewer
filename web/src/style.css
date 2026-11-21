@@ -1,0 +1,66 @@
+@import 'tailwindcss';
+
+/* sulu 色系，来自 Kigen.design，按 Tailwind 4 的 @theme 写法注册为 sulu-* 颜色工具类 */
+@theme {
+  --color-sulu-50: #dbfbb8;
+  --color-sulu-100: #b8e876;
+  --color-sulu-200: #abd76d;
+  --color-sulu-300: #98c161;
+  --color-sulu-400: #84a753;
+  --color-sulu-500: #6f8d45;
+  --color-sulu-600: #587136;
+  --color-sulu-700: #425627;
+  --color-sulu-800: #2c3a19;
+  --color-sulu-900: #17200b;
+  --color-sulu-950: #0c1305;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
+}
+
+@layer components {
+  .field-input {
+    @apply rounded border border-stone-300 bg-white px-2 py-1 text-stone-800 outline-none focus:border-sulu-400 focus:ring-2 focus:ring-sulu-100;
+  }
+
+
+
+  .about-tab {
+    @apply -mb-px cursor-pointer border-b-2 border-transparent py-2.5 text-stone-500 hover:text-stone-800 aria-selected:border-sulu-500 aria-selected:font-semibold aria-selected:text-sulu-800;
+  }
+
+  .about-link {
+    @apply text-sky-700 underline decoration-sky-700/40 underline-offset-2 hover:decoration-sky-700;
+  }
+
+  /* 与 MapLibre 比例尺一致的底行文字：半透明白底、10px 字号、无圆角 */
+  /* 底行的比例尺、坐标与署名：同一高度、上下边缘对齐，字号与比例尺一致 */
+  .map-scale-text {
+    @apply box-border flex h-[18px] items-center gap-1 bg-white/75 px-[5px] font-sans text-[10px] leading-none text-stone-800 tabular-nums [&_a]:hover:underline;
+  }
+
+  /* 地球投影外围的星空：深色底上叠三层不同间距的星点，平铺时错开避免显出网格 */
+  .starfield {
+    background-color: #03050c;
+    background-image:
+      radial-gradient(1px 1px at 23px 41px, #fff 50%, transparent),
+      radial-gradient(1px 1px at 137px 89px, #ffffffcc 50%, transparent),
+      radial-gradient(1.5px 1.5px at 71px 163px, #fff 50%, transparent),
+      radial-gradient(1px 1px at 191px 17px, #cfe3ff 50%, transparent),
+      radial-gradient(1px 1px at 59px 211px, #ffffffaa 50%, transparent),
+      radial-gradient(1px 1px at 11px 97px, #ffffff88 50%, transparent),
+      radial-gradient(2px 2px at 163px 271px, #fff 50%, transparent),
+      radial-gradient(1px 1px at 241px 139px, #fff2d0 50%, transparent);
+    background-size:
+      257px 293px,
+      257px 293px,
+      257px 293px,
+      257px 293px,
+      331px 347px,
+      331px 347px,
+      331px 347px,
+      331px 347px;
+  }
+}
+
+.maplibregl-popup-content {
+  @apply max-h-80 overflow-y-auto px-3 py-2.5;
+}
