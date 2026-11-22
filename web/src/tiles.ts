@@ -1,10 +1,14 @@
-import { addProtocol } from 'maplibre-gl';
+import { addProtocol, setMaxParallelImageRequests } from 'maplibre-gl';
 import { sceneContains } from './composition';
 import type { Scene } from './types';
 
 export const PROTOCOL = 's2';
 /** 后端单次请求最多参与合成的景数，与后端上限一致 */
 const MAX_SCENES_PER_REQUEST = 24;
+/** 同时发往后端的影像请求数，沿用 MapLibre 默认的图片并发数；后端同时渲染 8 个瓦片，再多只是在后端排队 */
+const MAX_PARALLEL = 16;
+/** 交给 MapLibre 的图片并发上限，取足够大的值，实际并发由 MAX_PARALLEL 控制 */
+const MAPLIBRE_IMAGE_REQUESTS = 512;
 const TILE_SAMPLES = 6;
 
 let stack: Scene[] = [];
@@ -88,6 +92,63 @@ function packByRegion(scenes: Scene[]): Scene[][] {
   return batches.map((batch) => batch.sort((a, b) => order.get(a)! - order.get(b)!));
 }
 
+interface Job {
+  /** 瓦片左上角在世界范围内的归一化位置，决定加载先后 */
+  row: number;
+  col: number;
+  start: () => void;
+}
+const pending: Job[] = [];
+let running = 0;
+let pumpTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** 推迟到下一轮事件循环再取任务，让同一帧提交的瓦片先到齐，再从最靠上、同一行最靠左的开始 */
+function pump() {
+  pumpTimer ??= setTimeout(() => {
+    pumpTimer = undefined;
+    while (running < MAX_PARALLEL && pending.length) {
+      let best = 0;
+      for (let i = 1; i < pending.length; i++) {
+        const a = pending[i];
+        const b = pending[best];
+        if (a.row < b.row || (a.row === b.row && a.col < b.col)) best = i;
+      }
+      running++;
+      pending.splice(best, 1)[0].start();
+    }
+  }, 0);
+}
+
+/**
+ * 按瓦片位置排队执行请求：视角不变时从上到下、从左到右依次加载；
+ * 视角变化后 MapLibre 中止不再需要的瓦片，还在排队的请求直接丢弃，不发往后端
+ */
+function enqueue<T>(row: number, col: number, signal: AbortSignal, task: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const job: Job = {
+      row,
+      col,
+      start: () => {
+        signal.removeEventListener('abort', drop);
+        task()
+          .then(resolve, reject)
+          .finally(() => {
+            running--;
+            pump();
+          });
+      },
+    };
+    const drop = () => {
+      pending.splice(pending.indexOf(job), 1);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', drop, { once: true });
+    pending.push(job);
+    pump();
+  });
+}
+
 /** 请求一组景合成的瓦片，没有影像时返回 undefined */
 async function fetchPart(path: string, scenes: Scene[], signal: AbortSignal) {
   const ids = scenes.map((s) => s.id).join(',');
@@ -101,11 +162,16 @@ async function fetchPart(path: string, scenes: Scene[], signal: AbortSignal) {
  * 影像瓦片由后端渲染为 WebP：前端只挑出与瓦片相交的景，按合成优先级把景编号交给后端。
  * 高分屏请求 512 像素的 @2x 瓦片；没有影像时后端返回 204，按透明瓦片处理。
  * 缩小后一个瓦片可能覆盖几十个分幅，超出后端单次景数上限时按分幅拆成多次请求，在浏览器中拼合。
+ * 请求数不设上限，由 enqueue 排队：瓦片按位置依次加载，视角变化后未发出的请求直接丢弃。
  * sq=1 后端不读取，只让浏览器缓存与按方格裁切之前的同名瓦片区分
  */
 export function registerProtocol(): void {
+  // MapLibre 默认只同时交出 16 个图片请求、按距视野中心的远近排队；放开后视野内的瓦片一次到齐，才能统一按位置排序
+  setMaxParallelImageRequests(MAPLIBRE_IMAGE_REQUESTS);
   addProtocol(PROTOCOL, async (params, abortController) => {
     const [, , , z, x, y] = params.url.split('/');
+    const row = Number(y) / 2 ** Number(z);
+    const col = Number(x) / 2 ** Number(z);
     const b = tileBounds(Number(z), Number(x), Number(y));
     const scenes = stack.filter((s) => touchesTile(s, b));
     if (!scenes.length) return { data: new ArrayBuffer(0) };
@@ -118,7 +184,9 @@ export function registerProtocol(): void {
     const t0 = performance.now();
     try {
       const { signal } = abortController;
-      const results = await Promise.allSettled(packByRegion(scenes).map((batch) => fetchPart(path, batch, signal)));
+      const results = await Promise.allSettled(
+        packByRegion(scenes).map((batch) => enqueue(row, col, signal, () => fetchPart(path, batch, signal))),
+      );
       abortController.signal.throwIfAborted();
       const parts = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
       const errors = results.flatMap((r) => (r.status === 'rejected' ? [r.reason] : []));
