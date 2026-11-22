@@ -125,7 +125,7 @@ export function createImagery(map: MlMap, opts: ImageryOptions) {
         type: 'line',
         source: 'regions',
         minzoom: MIN_TILE_ZOOM,
-        paint: { 'line-color': SULU_100, 'line-width': 1, 'line-opacity': 0.7 },
+        paint: { 'line-color': SULU_100, 'line-width': 0.6, 'line-opacity': 0.5 },
       },
       beforeId,
     );
@@ -136,7 +136,7 @@ export function createImagery(map: MlMap, opts: ImageryOptions) {
         source: 'regions',
         minzoom: MIN_TILE_ZOOM,
         filter: ['==', ['get', 'tile'], ''],
-        paint: { 'line-color': SULU_100, 'line-width': 3 },
+        paint: { 'line-color': SULU_100, 'line-width': 2, 'line-opacity': 0.8 },
       },
       beforeId,
     );
