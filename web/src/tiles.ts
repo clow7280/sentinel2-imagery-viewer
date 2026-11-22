@@ -4,7 +4,7 @@ import type { Scene } from './types';
 
 export const PROTOCOL = 's2';
 /** 后端单次请求最多参与合成的景数，与后端上限一致 */
-const MAX_SCENES_PER_TILE = 24;
+const MAX_SCENES_PER_REQUEST = 24;
 const TILE_SAMPLES = 6;
 
 let stack: Scene[] = [];
@@ -55,11 +55,15 @@ function touchesTile(s: Scene, b: [number, number, number, number]): boolean {
 }
 
 /**
- * 把瓦片内的景按 MGRS 分幅分组，再装进每组不超过 MAX_SCENES_PER_TILE 景的请求。
+ * 景数超过 MAX_SCENES_PER_REQUEST 时把瓦片内的景拆成多次请求，否则原样作为一次请求。
  * 同一分幅的首选景与补缺测景必须在同一请求内，后端才能按优先级合成；
- * 不同分幅各填自己的方格、互不重叠，可以分开渲染再拼合。单个分幅的景数超过上限时截掉排在后面的补缺测景
+ * 不同分幅各填自己的方格，可以分开渲染再拼合。单个分幅的景数超过上限时截掉排在后面的补缺测景。
+ * 分组只取决于分幅名：先按 MGRS 网格带（分幅名去掉末两位，如 36S）分块，块内按分幅名排序后装箱，
+ * 某个分幅的景有变化时只影响所在网格带的请求，其余请求的地址不变，仍可命中缓存。
+ * 每组内的景保持传入时的先后，即各分幅的首选景在前、补缺测景在后
  */
 function packByRegion(scenes: Scene[]): Scene[][] {
+  if (scenes.length <= MAX_SCENES_PER_REQUEST) return [scenes];
   const regions = new Map<string, Scene[]>();
   for (const s of scenes) {
     const list = regions.get(s.tile) ?? [];
@@ -68,16 +72,20 @@ function packByRegion(scenes: Scene[]): Scene[][] {
   }
   const batches: Scene[][] = [];
   let cur: Scene[] = [];
-  for (const list of regions.values()) {
-    const group = list.slice(0, MAX_SCENES_PER_TILE);
-    if (cur.length + group.length > MAX_SCENES_PER_TILE) {
+  let zone = '';
+  for (const name of [...regions.keys()].sort()) {
+    const group = regions.get(name)!.slice(0, MAX_SCENES_PER_REQUEST);
+    const z = name.slice(0, -2);
+    if (cur.length && (z !== zone || cur.length + group.length > MAX_SCENES_PER_REQUEST)) {
       batches.push(cur);
       cur = [];
     }
+    zone = z;
     cur.push(...group);
   }
   if (cur.length) batches.push(cur);
-  return batches;
+  const order = new Map(scenes.map((s, i) => [s, i]));
+  return batches.map((batch) => batch.sort((a, b) => order.get(a)! - order.get(b)!));
 }
 
 /** 请求一组景合成的瓦片，没有影像时返回 undefined */
@@ -136,7 +144,7 @@ export function registerProtocol(): void {
 
 /**
  * 把各组渲染结果叠成一张瓦片。各组只覆盖自己的分幅方格，仅在 UTM 带交界处可能重叠；
- * 从最后一组画起，排在前面的组后画、覆盖在上，与单次请求时前面的景优先占据像元一致
+ * 从最后一组画起，排在前面的组后画、覆盖在上，重叠处的取舍只取决于分组先后，结果固定
  */
 async function mergeImages(images: ArrayBuffer[]): Promise<ImageBitmap> {
   const decoded = await Promise.allSettled(images.map((d) => createImageBitmap(new Blob([d], { type: 'image/webp' }))));

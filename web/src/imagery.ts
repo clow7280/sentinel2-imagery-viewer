@@ -193,7 +193,7 @@ export function createImagery(map: MlMap, opts: ImageryOptions) {
 
   /**
    * 按区域合成影像图层的景序列：各区域的首选景排在前面，补缺测的景排在后面，
-   * 单个瓦片的景数有上限时优先保住首选景。后端合成时每景只填自己的方格，区域之间互不遮挡
+   * 单个分幅的景数超过后端单次请求上限时按此顺序截取，优先保住首选景。后端合成时每景只填自己的方格，区域之间互不遮挡
    */
   function rebuildStack() {
     const byTile = new Map<string, Scene[]>();
