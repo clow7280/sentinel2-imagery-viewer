@@ -1,3 +1,4 @@
+import { normTile } from './regions';
 import type { BBox, Scene } from './types';
 
 /** Earth Search 的 STAC 检索，经后端转发并缓存 */
@@ -11,6 +12,10 @@ export interface SearchParams {
   end: string;
   maxCloud: number;
   maxItems: number;
+  /** 只检索这些 MGRS 分幅 */
+  tiles?: string[];
+  /** 按云量从低到高返回，截断时留下的是最晴的景 */
+  clearFirst?: boolean;
 }
 
 export interface SearchResult {
@@ -23,7 +28,16 @@ export interface SearchResult {
  * 否则每景约 19 KB，翻一页 50 景近 1 MB，会挤占主机有限的出口带宽
  */
 const SCENE_FIELDS = {
-  include: ['id', 'bbox', 'geometry', 'properties.datetime', 'properties.eo:cloud_cover', 'properties.grid:code'],
+  include: [
+    'id',
+    'bbox',
+    'geometry',
+    'properties.datetime',
+    'properties.eo:cloud_cover',
+    'properties.grid:code',
+    'properties.s2:nodata_pixel_percentage',
+    'properties.s2:product_uri',
+  ],
   exclude: ['assets', 'links'],
 };
 
@@ -35,7 +49,10 @@ function toScene(f: any): Scene | undefined {
     datetime: p.datetime,
     date: String(p.datetime).slice(0, 10),
     cloud: p['eo:cloud_cover'] ?? 100,
-    tile: String(p['grid:code'] ?? '').replace('MGRS-', ''),
+    nodata: p['s2:nodata_pixel_percentage'] ?? 0,
+    // Earth Search 没有 sat:relative_orbit，相对轨道号取自产品名中的 R 段，如 _R020_
+    orbit: Number(/_R(\d{3})_/.exec(p['s2:product_uri'] ?? '')?.[1] ?? 0),
+    tile: normTile(String(p['grid:code'] ?? '').replace('MGRS-', '')),
     bbox: f.bbox,
     geometry: f.geometry,
   };
@@ -55,7 +72,11 @@ export async function searchScenes(
     bbox: params.bbox,
     datetime: `${params.start}T00:00:00Z/${params.end}T23:59:59Z`,
     limit: PAGE_LIMIT,
-    query: { 'eo:cloud_cover': { lte: params.maxCloud } },
+    query: {
+      'eo:cloud_cover': { lte: params.maxCloud },
+      ...(params.tiles && { 'grid:code': { in: params.tiles.map((t) => `MGRS-${t}`) } }),
+    },
+    ...(params.clearFirst && { sortby: [{ field: 'properties.eo:cloud_cover', direction: 'asc' }] }),
     fields: SCENE_FIELDS,
   };
   const byKey = new Map<string, Scene>();
@@ -93,22 +114,20 @@ export async function searchScenes(
   return { scenes: [...byKey.values()], truncated };
 }
 
-/** 按景编号批量取足迹几何，每次请求最多 100 景，只要编号与几何字段 */
-export async function sceneGeometries(ids: string[]): Promise<Map<string, Scene['geometry']>> {
-  const out = new Map<string, Scene['geometry']>();
+/** 按景编号批量取元数据，每次请求最多 100 景 */
+export async function scenesByIds(ids: string[]): Promise<Scene[]> {
+  const out: Scene[] = [];
   for (let i = 0; i < ids.length; i += 100) {
     const resp = await fetch(SEARCH_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        collections: ['sentinel-2-l2a'],
-        ids: ids.slice(i, i + 100),
-        limit: 100,
-        fields: { include: ['id', 'geometry'], exclude: ['assets', 'links'] },
-      }),
+      body: JSON.stringify({ collections: ['sentinel-2-l2a'], ids: ids.slice(i, i + 100), limit: 100, fields: SCENE_FIELDS }),
     });
     if (!resp.ok) throw new Error(`STAC 检索失败：HTTP ${resp.status}`);
-    for (const f of (await resp.json()).features ?? []) out.set(f.id, f.geometry);
+    for (const f of (await resp.json()).features ?? []) {
+      const s = toScene(f);
+      if (s) out.push(s);
+    }
   }
   return out;
 }

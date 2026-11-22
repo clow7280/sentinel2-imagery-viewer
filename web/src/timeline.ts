@@ -16,8 +16,13 @@ const DEFAULT_CLOUD = 20;
 export interface TimelineOptions {
   /** 检索时间段或云量上限改变，拖动与滚轮在停止后才触发 */
   onChange: () => void;
-  /** 点击记录选中日期 */
+  /** 点击日期柱，在该区域预览这一天的影像 */
   onSelect: (date: string) => void;
+  /** 保存当前预览的日期为该区域的选择 */
+  onSave: () => void;
+  /** 清除该区域保存的选择，恢复自动挑选 */
+  onReset: () => void;
+  onClose: () => void;
 }
 
 const isoDay = (t: number) => new Date(t).toISOString().slice(0, 10);
@@ -38,8 +43,9 @@ function cloudClass(cloud: number): string {
 const satellites = (g: DateGroup) => [...new Set(g.scenes.map((s) => s.id.slice(0, 3)))].sort().join('、');
 
 /**
- * 底部浮动时间轴：可见范围即检索时间段，拖动平移、滚轮缩放，也可手动输入起止日期。
- * 每个有影像的日期画一根柱，柱高为对视野的覆盖比例，颜色深浅表示云量
+ * 区域时间轴：点击影像后在底部弹出，列出该 MGRS 分幅的影像。
+ * 可见范围即检索时间段，拖动平移、滚轮缩放，也可手动输入起止日期。
+ * 每个有影像的日期画一根柱，柱高为对分幅的覆盖比例，颜色深浅表示云量，星标为自动挑选的日期
  */
 export class Timeline {
   /** 可见范围，毫秒，end 不含 */
@@ -60,6 +66,9 @@ export class Timeline {
   private readonly startInput: HTMLInputElement;
   private readonly endInput: HTMLInputElement;
   private readonly cloudSelect: HTMLSelectElement;
+  private readonly regionLabel: HTMLElement;
+  private readonly saveBtn: HTMLButtonElement;
+  private readonly resetBtn: HTMLButtonElement;
 
   constructor(
     private readonly root: HTMLElement,
@@ -72,11 +81,15 @@ export class Timeline {
 
     root.innerHTML =
       '<div class="flex items-center gap-2 text-xs text-stone-600">' +
+      '<span data-region class="text-[13px] font-semibold text-stone-800 tabular-nums"></span>' +
       '<input type="date" data-start class="field-input py-0 text-xs" />–<input type="date" data-end class="field-input py-0 text-xs" />' +
       `<label class="flex items-center gap-1">云量 ≤<select data-cloud class="field-input py-0 text-xs">${CLOUD_OPTIONS.map(
         (c) => `<option value="${c}" ${c === DEFAULT_CLOUD ? 'selected' : ''}>${c}%</option>`,
       ).join('')}</select></label>` +
-      '<span data-status class="ml-auto truncate text-stone-500"></span></div>' +
+      '<span data-status class="ml-auto truncate text-stone-500"></span>' +
+      '<button data-reset hidden class="tl-btn">恢复自动</button>' +
+      '<button data-save class="tl-btn">保存区域选择</button>' +
+      '<button data-close aria-label="关闭" title="关闭并取消选择区域" class="-mr-1 cursor-pointer rounded px-1 text-base leading-none text-stone-500 hover:bg-stone-100">×</button></div>' +
       '<div data-track class="relative mt-1 h-10 cursor-grab touch-none overflow-hidden rounded bg-stone-100 select-none active:cursor-grabbing">' +
       '<div data-bars class="absolute inset-0"></div></div>' +
       '<div data-axis class="relative h-3.5 overflow-hidden text-[10px] text-stone-500"></div>' +
@@ -90,6 +103,12 @@ export class Timeline {
     this.startInput = q('[data-start]');
     this.endInput = q('[data-end]');
     this.cloudSelect = q('[data-cloud]');
+    this.regionLabel = q('[data-region]');
+    this.saveBtn = q('[data-save]');
+    this.resetBtn = q('[data-reset]');
+    this.saveBtn.addEventListener('click', () => opts.onSave());
+    this.resetBtn.addEventListener('click', () => opts.onReset());
+    q('[data-close]').addEventListener('click', () => opts.onClose());
 
     this.startInput.addEventListener('change', () => this.applyInputs());
     this.endInput.addEventListener('change', () => this.applyInputs());
@@ -134,6 +153,21 @@ export class Timeline {
   setSelected(date: string | undefined) {
     this.selected = date;
     this.render();
+  }
+
+  /** 切换到另一个区域，清空上一个区域的记录 */
+  setRegion(tile: string) {
+    this.regionLabel.textContent = `区域 ${tile}`;
+    this.groups = [];
+    this.searched = undefined;
+    this.setStatus('');
+    this.render();
+  }
+
+  /** saved 为该区域已有保存的选择，dirty 为预览的日期尚未保存 */
+  setPickState(saved: boolean, dirty: boolean) {
+    this.saveBtn.disabled = !dirty;
+    this.resetBtn.hidden = !saved;
   }
 
   private applyInputs() {
@@ -206,7 +240,9 @@ export class Timeline {
         this.scheduleChange();
         return;
       }
-      const date = (ev.target as HTMLElement).closest<HTMLElement>('[data-date]')?.dataset.date;
+      // 指针已被轨道捕获，事件目标总是轨道本身，按松开位置取柱子
+      const hit = document.elementFromPoint(ev.clientX, ev.clientY);
+      const date = hit?.closest<HTMLElement>('[data-date]')?.dataset.date;
       if (date) this.opts.onSelect(date);
     };
     this.track.addEventListener('pointerup', finish);
@@ -243,18 +279,17 @@ export class Timeline {
     const times = g.scenes.map((s) => s.datetime.slice(11, 19)).sort();
     const span = times[0] === times.at(-1) ? times[0] : `${times[0]}–${times.at(-1)}`;
     const weekday = '日一二三四五六'[new Date(g.date).getUTCDay()];
-    const tiles = [...new Set(g.scenes.map((s) => s.tile))].sort();
     const rows: [string, string][] = [
       ['成像时刻', `${span} UTC`],
       ['卫星', satellites(g)],
-      ['景数', `${g.scenes.length} 景，MGRS ${tiles.slice(0, 4).join('、')}${tiles.length > 4 ? ' 等' : ''}`],
-      ['视野覆盖', `${(g.coverage * 100).toFixed(0)}%`],
+      ['景数', `${g.scenes.length} 景`],
+      ['分幅覆盖', `${(g.coverage * 100).toFixed(0)}%`],
       ['平均云量', `${g.cloud.toFixed(1)}%`],
     ];
     this.tip.replaceChildren();
     const title = document.createElement('div');
     title.className = 'font-semibold';
-    title.textContent = `${g.date} 周${weekday}${g.date === this.recommended ? ' · 推荐' : ''}${g.date === this.selected ? ' · 当前' : ''}`;
+    title.textContent = `${g.date} 周${weekday}${g.date === this.recommended ? ' · 自动挑选' : ''}${g.date === this.selected ? ' · 正在显示' : ''}`;
     this.tip.append(title);
     for (const [k, v] of rows) {
       const row = document.createElement('div');
@@ -293,7 +328,7 @@ export class Timeline {
         const sel = g.date === this.selected;
         const star =
           g.date === this.recommended
-            ? `<b class="absolute -top-0.5 -translate-x-1/2 text-[9px] leading-none text-sulu-800" style="left:${(left + barW / 2).toFixed(1)}px">★</b>`
+            ? `<b class="pointer-events-none absolute -top-0.5 -translate-x-1/2 text-[9px] leading-none text-sulu-800" style="left:${(left + barW / 2).toFixed(1)}px">★</b>`
             : '';
         return (
           `<span data-date="${g.date}" class="absolute bottom-0 cursor-pointer rounded-t-sm ${cloudClass(g.cloud)} hover:brightness-90 ${sel ? 'outline-2 outline-offset-1 outline-sky-600' : ''}" ` +

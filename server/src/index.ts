@@ -164,7 +164,7 @@ app.get('/api/seamark/:z/:x/:y', async (c) => {
 });
 
 /** 影像瓦片的缩放范围，与前端栅格源的 minzoom、maxzoom 一致 */
-const S2_MIN_ZOOM = 7;
+const S2_MIN_ZOOM = 4;
 const S2_MAX_ZOOM = 15;
 /** 单个瓦片最多参与合成的景数 */
 const S2_MAX_SCENES = 24;
@@ -178,7 +178,7 @@ const EMPTY = Buffer.alloc(0);
 
 /**
  * Sentinel-2 影像瓦片：按景编号读取 COG，在服务端重投影合成为 WebP。
- * ids 按合成优先级排列，同一瓦片与景序列的结果不变，长期缓存；没有影像时返回 204
+ * ids 按合成优先级排列，每景只填自己的 MGRS 方格，同一瓦片与景序列的结果不变，长期缓存；没有影像时返回 204
  */
 app.get('/api/s2/:z/:x/:y', async (c) => {
   const { z: zs, x: xs, y: ys } = c.req.param();
@@ -195,7 +195,8 @@ app.get('/api/s2/:z/:x/:y', async (c) => {
     return c.text('景编号无效', 400);
   }
   const size = m[2] ? 512 : 256;
-  const key = `s2:${size}:${z}/${x}/${y}:${ids.join(',')}`;
+  // 键名中的 sq 表示按方格裁切，与之前不裁切的渲染结果区分
+  const key = `s2sq:${size}:${z}/${x}/${y}:${ids.join(',')}`;
   const hit = await caches.tiles.get(key);
   const entry =
     hit ??
@@ -215,7 +216,7 @@ app.get('/api/s2/:z/:x/:y', async (c) => {
   return c.body(new Uint8Array(entry.body), 200, { ...headers, 'Content-Type': 'image/webp' });
 });
 
-// 服务器已缓存影像的景编号，前端据此绘制影像边界
+// 服务器已缓存影像的景编号，前端据此在缩小后仍显示这些区域的影像
 app.get('/api/cached-scenes', (c) =>
   c.json(listCachedScenes(), 200, { 'Cache-Control': 'public, max-age=60' }),
 );

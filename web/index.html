@@ -25,10 +25,14 @@
       </header>
       <div
         id="info"
-        class="pointer-events-auto flex min-w-0 items-center gap-2.5 rounded-lg bg-white/95 pr-3 pl-2.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200"
+        class="pointer-events-auto flex min-w-0 items-center gap-2.5 rounded-lg bg-white/95 px-3 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200"
       >
-        <!-- 是否处于影像检索与显示的缩放范围，只用图标表示 -->
-        <span data-zoom class="flex size-7 flex-none items-center justify-center rounded-full transition-colors">
+        <!-- 是否处于影像检索与显示的缩放范围，只用图标表示；加载中时图标外圈转动 -->
+        <span data-zoom class="relative flex size-6 flex-none items-center justify-center rounded-full transition-colors">
+          <i
+            data-spin
+            class="absolute -inset-0.5 animate-spin rounded-full border-2 border-transparent border-t-sulu-600 border-r-sulu-600"
+          ></i>
           <svg viewBox="0 0 24 24" class="size-4.5 fill-none stroke-current stroke-[1.6]" aria-hidden="true">
             <g transform="rotate(-45 12 12)">
               <rect x="9.5" y="9" width="5" height="6" rx="1" />
@@ -39,8 +43,7 @@
             <path d="M14.5 19.5a5 5 0 0 0 5-5" stroke-linecap="round" />
           </svg>
         </span>
-        <i data-spin class="size-3.5 flex-none animate-spin rounded-full border-2 border-sulu-200 border-t-sulu-600"></i>
-        <div class="min-w-0">
+        <div data-body class="min-w-0">
           <div data-text class="truncate text-[13px] font-medium text-stone-800"></div>
           <div data-detail class="truncate text-[11px] text-stone-500 tabular-nums empty:hidden"></div>
         </div>
@@ -48,7 +51,8 @@
     </div>
     <section
       id="timeline"
-      class="fixed bottom-9 left-1/2 z-10 w-[44rem] max-w-[calc(100%-1.25rem)] -translate-x-1/2 rounded-lg bg-white/95 px-3 pt-1.5 pb-0.5 shadow-sm ring-1 ring-stone-200"
+      hidden
+      class="fixed bottom-14 left-1/2 z-10 w-[56rem] max-w-[calc(100%-1.25rem)] -translate-x-1/2 rounded-lg bg-white/95 px-3 pt-1.5 pb-0.5 shadow-sm ring-1 ring-stone-200"
     ></section>
     <dialog
       id="about"
@@ -71,10 +75,10 @@
         <p>
           浏览 Sentinel-2 L2A 10 米真彩色影像，按日期查看历史存档，并叠加 ESA 采集计划、卫星扫描带、海图标志与航路。
         </p>
-        <p class="text-stone-500">
+        <p class="text-center text-stone-500">
           作者: Clow &lt;<a class="about-link" href="mailto:cevenizlow@gmail.com">cevenizlow@gmail.com</a>&gt; © 2026 C410
         </p>
-        <p id="about-version" class="text-xs text-stone-400 tabular-nums"></p>
+        <p id="about-version" class="text-right text-xs text-stone-400 tabular-nums"></p>
       </section>
       <section data-panel="data" hidden class="px-4 py-3">
         <dl class="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 leading-relaxed">

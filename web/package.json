@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "maplibre-gl": "^6.19.0",
+    "mgrs": "2.2.0",
     "pmtiles": "4.5.0",
     "satellite.js": "^7.2.0"
   },
