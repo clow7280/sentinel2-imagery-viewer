@@ -170,9 +170,12 @@ const S2_MAX_ZOOM = 15;
 const S2_MAX_SCENES = 24;
 /**
  * 同时渲染的瓦片数。渲染本身只需几十毫秒，冷启动时主要在等东京到美西的回源，
- * 并发高一些才能让回源等待相互重叠；解码在 zlib 线程池中进行
+ * 并发能让回源等待相互重叠；解码在 zlib 线程池中进行。
+ * 每路渲染会同时解码多个 1024² 的 COG 内部瓦片，实测 12 路时存活 Buffer 峰值约 410 MB，
+ * 逼近 systemd 的 700M 内存上限，6 路时约 300 MB，冷加载耗时基本不变，但成批请求排队 p95 达 3 秒，
+ * 取 8 路折中
  */
-const renderLimit = new Semaphore(12);
+const renderLimit = new Semaphore(8);
 const renderTasks = new SharedTask<Entry>();
 const EMPTY = Buffer.alloc(0);
 

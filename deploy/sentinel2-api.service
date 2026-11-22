@@ -14,6 +14,9 @@ Environment=CACHE_DIR=/var/cache/sentinel2
 Environment=CACHE_COG_GB=20
 Environment=CACHE_TILES_GB=4
 Environment=CACHE_META_GB=1
+# glibc 释放大块内存后会抬高 mmap 阈值，此后同尺寸的 Buffer 改从主堆分配，释放后不还给系统，
+# RSS 停在历次峰值附近直至被 OOM 杀掉；固定阈值后 128 KB 以上的分配走 mmap，释放即归还
+Environment=MALLOC_MMAP_THRESHOLD_=131072
 ExecStart=/opt/node/bin/node /srv/sentinel2/server/index.mjs
 Restart=on-failure
 RestartSec=3
