@@ -109,14 +109,21 @@ export function registerProtocol(): void {
     stats.requested++;
     const t0 = performance.now();
     try {
-      const parts = await Promise.all(packByRegion(scenes).map((batch) => fetchPart(path, batch, abortController.signal)));
+      const { signal } = abortController;
+      const results = await Promise.allSettled(packByRegion(scenes).map((batch) => fetchPart(path, batch, signal)));
+      abortController.signal.throwIfAborted();
+      const parts = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+      const errors = results.flatMap((r) => (r.status === 'rejected' ? [r.reason] : []));
+      // 部分请求失败时仍显示其余分幅，全部失败才算瓦片失败
+      if (!parts.length) throw errors[0];
+      if (errors.length) console.warn(`影像瓦片 ${z}/${x}/${y} 有 ${errors.length} 组请求失败，只显示其余部分`, errors[0]);
+      const images = parts.flatMap((p) => (p.data ? [p.data] : []));
+      const data = images.length > 1 ? await mergeImages(images) : (images[0] ?? new ArrayBuffer(0));
       stats.done++;
       stats.bytes += parts.reduce((n, p) => n + (p.data?.byteLength ?? 0), 0);
       stats.ms += performance.now() - t0;
-      if (parts.every((p) => p.hit)) stats.hits++;
-      const images = parts.flatMap((p) => (p.data ? [p.data] : []));
-      if (images.length <= 1) return { data: images[0] ?? new ArrayBuffer(0) };
-      return { data: await mergeImages(images) };
+      if (!errors.length && parts.every((p) => p.hit)) stats.hits++;
+      return { data };
     } catch (err) {
       if (abortController.signal.aborted) stats.canceled++;
       else stats.failed++;
@@ -132,14 +139,18 @@ export function registerProtocol(): void {
  * 从最后一组画起，排在前面的组后画、覆盖在上，与单次请求时前面的景优先占据像元一致
  */
 async function mergeImages(images: ArrayBuffer[]): Promise<ImageBitmap> {
-  const bitmaps = await Promise.all(images.map((d) => createImageBitmap(new Blob([d], { type: 'image/webp' }))));
-  const canvas = new OffscreenCanvas(bitmaps[0].width, bitmaps[0].height);
-  const ctx = canvas.getContext('2d')!;
-  for (const bm of bitmaps.toReversed()) {
-    ctx.drawImage(bm, 0, 0);
-    bm.close();
+  const decoded = await Promise.allSettled(images.map((d) => createImageBitmap(new Blob([d], { type: 'image/webp' }))));
+  const bitmaps = decoded.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+  try {
+    const bad = decoded.find((r) => r.status === 'rejected');
+    if (bad) throw bad.reason;
+    const canvas = new OffscreenCanvas(bitmaps[0].width, bitmaps[0].height);
+    const ctx = canvas.getContext('2d')!;
+    for (const bm of bitmaps.toReversed()) ctx.drawImage(bm, 0, 0);
+    return canvas.transferToImageBitmap();
+  } finally {
+    for (const bm of bitmaps) bm.close();
   }
-  return canvas.transferToImageBitmap();
 }
 
 export function tileStats(): TileStats {
