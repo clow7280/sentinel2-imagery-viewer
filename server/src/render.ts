@@ -51,7 +51,9 @@ interface Level {
 function cogSource(cache: DiskCache, objPath: string) {
   let size: number | null = null;
   return {
-    async fetch(slices: { offset: number; length: number }[]): Promise<ArrayBuffer[]> {
+    // geotiff 读窗口时会传入 readRasters 的 signal，中止后不再发起新的分块读取
+    async fetch(slices: { offset: number; length: number }[], signal?: AbortSignal): Promise<ArrayBuffer[]> {
+      signal?.throwIfAborted();
       return Promise.all(
         slices.map(async ({ offset, length }) => {
           const r = await readCogRange(cache, objPath, { start: offset, end: offset + length - 1 });
@@ -183,7 +185,13 @@ interface Prepared {
 }
 
 /** 把瓦片未填像元换算到该景 UTM 坐标，并读取对应窗口的真彩色数据 */
-async function prepare(cache: DiskCache, scene: SceneMeta, grid: TileGrid, filled: Uint8Array): Promise<Prepared | undefined> {
+async function prepare(
+  cache: DiskCache,
+  scene: SceneMeta,
+  grid: TileGrid,
+  filled: Uint8Array,
+  signal?: AbortSignal,
+): Promise<Prepared | undefined> {
   const { size } = grid;
   const n = GRID + 1;
   const conv = converter(scene.epsg);
@@ -224,6 +232,7 @@ async function prepare(cache: DiskCache, scene: SceneMeta, grid: TileGrid, fille
     window: [win.c0, win.r0, win.c0 + win.w, win.r0 + win.h],
     samples: [0, 1, 2],
     interleave: true,
+    signal,
   })) as unknown as Uint8Array;
   return { ux, uy, data, win, res: lv.res, x0: scene.transform[2], y0: scene.transform[5] };
 }
@@ -255,6 +264,7 @@ function composite(p: Prepared, out: Uint8Array, filled: Uint8Array): number {
 /**
  * 按优先级逐景合成 Web 墨卡托瓦片并编码为 WebP，瓦片内没有任何影像时返回 undefined。
  * 每批并发读取若干景以摊薄回源延迟，读完后仍按原顺序写入，排在前面的景优先占据像元
+ * signal 中止后不再读取后续批次，抛出 AbortError
  */
 export async function renderTile(
   cache: DiskCache,
@@ -263,6 +273,7 @@ export async function renderTile(
   y: number,
   size: number,
   scenes: SceneMeta[],
+  signal?: AbortSignal,
 ): Promise<Buffer | undefined> {
   const grid = tileGrid(z, x, y, size);
   const total = size * size;
@@ -271,8 +282,10 @@ export async function renderTile(
   let remaining = total;
 
   for (let s = 0; s < scenes.length && remaining > 0; s += BATCH) {
+    // 请求方都已离开时在读下一批景之前停下；批内读取在发起新的分块请求前也会停下，已发出的回源请求照常完成并写入分块缓存
+    signal?.throwIfAborted();
     const batch = scenes.slice(s, s + BATCH);
-    const prepared = await Promise.all(batch.map((sc) => prepare(cache, sc, grid, filled)));
+    const prepared = await Promise.all(batch.map((sc) => prepare(cache, sc, grid, filled, signal)));
     for (const p of prepared) {
       if (p && remaining > 0) remaining -= composite(p, out, filled);
     }

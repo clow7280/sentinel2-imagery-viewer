@@ -2,7 +2,7 @@ import { serve } from '@hono/node-server';
 import { type Context, Hono } from 'hono';
 import net from 'node:net';
 import path from 'node:path';
-import { type CacheStatus, DiskCache, type Entry, Inflight, Semaphore } from './cache';
+import { type CacheStatus, DiskCache, type Entry, Semaphore, SharedTask } from './cache';
 import { listCachedScenes, rebuildSceneIndex } from './cog';
 import { config } from './config';
 import { renderTile } from './render';
@@ -52,6 +52,8 @@ app.use('/api/*', async (c, next) => {
 });
 
 app.onError((err, c) => {
+  // 客户端已断开，例如地图移走后取消的瓦片请求，不必记录也无人接收响应
+  if (c.req.raw.signal.aborted) return new Response(null, { status: 499 });
   if (err instanceof UpstreamError) return c.text(err.message, err.status as 400);
   console.error(err);
   return c.text('服务器内部错误', 500);
@@ -171,7 +173,7 @@ const S2_MAX_SCENES = 24;
  * 并发高一些才能让回源等待相互重叠；解码在 zlib 线程池中进行
  */
 const renderLimit = new Semaphore(12);
-const renderInflight = new Inflight<Entry>();
+const renderTasks = new SharedTask<Entry>();
 const EMPTY = Buffer.alloc(0);
 
 /**
@@ -197,9 +199,13 @@ app.get('/api/s2/:z/:x/:y', async (c) => {
   const hit = await caches.tiles.get(key);
   const entry =
     hit ??
-    (await renderInflight.run(key, async () => {
+    (await renderTasks.run(key, c.req.raw.signal, async (signal) => {
       const scenes = await resolveScenes(caches.meta, ids);
-      const body = await renderLimit.run(() => renderTile(caches.cog, z, x, y, size, scenes));
+      // 排队期间请求方都已离开时不再开始渲染
+      const body = await renderLimit.run(() => {
+        signal.throwIfAborted();
+        return renderTile(caches.cog, z, x, y, size, scenes, signal);
+      });
       const e: Entry = { status: body ? 200 : 204, contentType: 'image/webp', storedAt: Date.now(), body: body ?? EMPTY };
       await caches.tiles.put(key, e);
       return e;
