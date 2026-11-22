@@ -5,6 +5,7 @@ import proj4, { type Converter } from 'proj4';
 import sharp from 'sharp';
 import type { DiskCache } from './cache';
 import { readCogRange } from './cog';
+import type { RenderTiming } from './metrics';
 
 /** 瓦片合成所需的单景信息，来自 STAC 的 visual 资产 */
 export interface SceneMeta {
@@ -285,7 +286,7 @@ function composite(p: Prepared, out: Uint8Array, filled: Uint8Array): number {
 /**
  * 按优先级逐景合成 Web 墨卡托瓦片并编码为 WebP，瓦片内没有任何影像时返回 undefined。
  * 每批并发读取若干景以摊薄回源延迟，读完后仍按原顺序写入，排在前面的景优先占据像元
- * signal 中止后不再读取后续批次，抛出 AbortError
+ * signal 中止后不再读取后续批次，抛出 AbortError；传入 timing 时累计各阶段耗时
  */
 export async function renderTile(
   cache: DiskCache,
@@ -295,6 +296,7 @@ export async function renderTile(
   size: number,
   scenes: SceneMeta[],
   signal?: AbortSignal,
+  timing?: RenderTiming,
 ): Promise<Buffer | undefined> {
   const grid = tileGrid(z, x, y, size);
   const total = size * size;
@@ -306,13 +308,23 @@ export async function renderTile(
     // 请求方都已离开时在读下一批景之前停下；批内读取在发起新的分块请求前也会停下，已发出的回源请求照常完成并写入分块缓存
     signal?.throwIfAborted();
     const batch = scenes.slice(s, s + BATCH);
+    const t = performance.now();
     const prepared = await Promise.all(batch.map((sc) => prepare(cache, sc, grid, filled, signal)));
+    const read = performance.now();
     for (const p of prepared) {
       if (p && remaining > 0) remaining -= composite(p, out, filled);
     }
+    if (timing) {
+      timing.read += read - t;
+      timing.composite += performance.now() - read;
+      timing.scenes += prepared.filter(Boolean).length;
+    }
   }
   if (remaining === total) return undefined;
-  return sharp(out, { raw: { width: size, height: size, channels: 4 } })
+  const t = performance.now();
+  const webp = await sharp(out, { raw: { width: size, height: size, channels: 4 } })
     .webp({ quality: WEBP_QUALITY, alphaQuality: 100 })
     .toBuffer();
+  if (timing) timing.encode += performance.now() - t;
+  return webp;
 }

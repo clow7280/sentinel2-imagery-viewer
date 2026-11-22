@@ -5,6 +5,7 @@ import path from 'node:path';
 import { type CacheStatus, DiskCache, type Entry, Semaphore, SharedTask } from './cache';
 import { listCachedScenes, rebuildSceneIndex } from './cog';
 import { config } from './config';
+import { recordRender, recordRenderEnd, type RenderTiming } from './metrics';
 import { renderTile } from './render';
 import { resolveScenes, SCENE_ID_RE, STAC_URL } from './scenes';
 import { cached, upstreamFetch, UpstreamError } from './upstream';
@@ -204,15 +205,33 @@ app.get('/api/s2/:z/:x/:y', async (c) => {
   const entry =
     hit ??
     (await renderTasks.run(key, c.req.raw.signal, async (signal) => {
-      const scenes = await resolveScenes(caches.meta, ids);
-      // 排队期间请求方都已离开时不再开始渲染
-      const body = await renderLimit.run(() => {
-        signal.throwIfAborted();
-        return renderTile(caches.cog, z, x, y, size, scenes, signal);
-      });
-      const e: Entry = { status: body ? 200 : 204, contentType: 'image/webp', storedAt: Date.now(), body: body ?? EMPTY };
-      await caches.tiles.put(key, e);
-      return e;
+      const t0 = performance.now();
+      const timing: RenderTiming = { read: 0, composite: 0, encode: 0, scenes: 0 };
+      let t1 = t0;
+      let t2 = t0;
+      try {
+        const scenes = await resolveScenes(caches.meta, ids);
+        t1 = performance.now();
+        // 排队期间请求方都已离开时不再开始渲染
+        const body = await renderLimit.run(() => {
+          signal.throwIfAborted();
+          t2 = performance.now();
+          return renderTile(caches.cog, z, x, y, size, scenes, signal, timing);
+        });
+        recordRender({
+          ...timing,
+          tile: `${z}/${x}/${y}${size === 512 ? '@2x' : ''}`,
+          resolve: t1 - t0,
+          queue: t2 - t1,
+          render: performance.now() - t2,
+        });
+        const e: Entry = { status: body ? 200 : 204, contentType: 'image/webp', storedAt: Date.now(), body: body ?? EMPTY };
+        await caches.tiles.put(key, e);
+        return e;
+      } catch (err) {
+        recordRenderEnd(signal.aborted);
+        throw err;
+      }
     }));
   const headers = { 'Cache-Control': 'public, max-age=604800, immutable', 'X-Cache': hit ? 'HIT' : 'MISS' };
   if (entry.status === 204) return c.body(null, 204, headers);
