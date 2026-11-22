@@ -142,6 +142,8 @@ pnpm release
 Earth Search 默认返回每景全部资产，一页 50 景近 1 MB，前端检索时用 `fields` 排除资产与要素链接，降到约 30 KB。
 Caddy 默认不压缩 GeoJSON、KML 与矢量瓦片，站点配置中补上这些类型后，检索一页约 3 KB，单颗卫星的采集计划 KML 从 2.2 MB 降到约 320 KB。
 
+每次发布后静态文件的 ETag 会变，Chrome 带着缓存中旧的 ETag 对 PMTiles 发 `If-Range` 范围请求时会拿到整个文件的 200 响应，PMTiles 客户端因此报错，所以 `*.pmtiles` 设为 `Cache-Control: no-store`。
+
 ## 已知限制
 
 - 影像从 7 级开始显示，检索范围限制在 36 平方度以内，单次检索最多取 1500 条

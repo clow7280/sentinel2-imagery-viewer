@@ -29,6 +29,10 @@ sentinel2.c410.space {
 		header @hashed Cache-Control "public, max-age=31536000, immutable"
 		@entry path / /index.html
 		header @entry Cache-Control "no-cache"
+		# 每次发布后 PMTiles 的 ETag 会变，Chrome 带着缓存里的旧 ETag 发 If-Range 时会拿到整个文件的 200 响应，
+		# PMTiles 客户端随即报错；不进浏览器缓存就不会带 If-Range，分块与目录由客户端自己在内存中缓存
+		@pmtiles path *.pmtiles
+		header @pmtiles Cache-Control "no-store"
 		try_files {path} /index.html
 		file_server
 	}
