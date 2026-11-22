@@ -167,7 +167,7 @@ app.get('/api/seamark/:z/:x/:y', async (c) => {
 /** 影像瓦片的缩放范围，与前端栅格源的 minzoom、maxzoom 一致 */
 const S2_MIN_ZOOM = 4;
 const S2_MAX_ZOOM = 15;
-/** 单个瓦片最多参与合成的景数 */
+/** 单次请求最多参与合成的景数，景更多的瓦片由前端拆成多次请求 */
 const S2_MAX_SCENES = 24;
 /**
  * 同时渲染的瓦片数。渲染本身只需几十毫秒，冷启动时主要在等东京到美西的回源，
