@@ -5,6 +5,7 @@ import proj4, { type Converter } from 'proj4';
 import sharp from 'sharp';
 import type { DiskCache } from './cache';
 import { readCogRange } from './cog';
+import type { RenderTiming } from './metrics';
 
 /** 瓦片合成所需的单景信息，来自 STAC 的 visual 资产 */
 export interface SceneMeta {
@@ -51,7 +52,9 @@ interface Level {
 function cogSource(cache: DiskCache, objPath: string) {
   let size: number | null = null;
   return {
-    async fetch(slices: { offset: number; length: number }[]): Promise<ArrayBuffer[]> {
+    // geotiff 读窗口时会传入 readRasters 的 signal，中止后不再发起新的分块读取
+    async fetch(slices: { offset: number; length: number }[], signal?: AbortSignal): Promise<ArrayBuffer[]> {
+      signal?.throwIfAborted();
       return Promise.all(
         slices.map(async ({ offset, length }) => {
           const r = await readCogRange(cache, objPath, { start: offset, end: offset + length - 1 });
@@ -121,8 +124,27 @@ interface Win {
   h: number;
 }
 
-/** 计算未填像元落在某层上的最小读取窗口，完全不相交时返回 undefined */
-function windowFor(ux: Float32Array, uy: Float32Array, filled: Uint8Array, scene: SceneMeta, lv: Level): Win | undefined {
+/**
+ * 景所属 MGRS 100 km 方格的 UTM 范围。Sentinel-2 分幅左上角与方格西北角相差几十米（如 199980、4100040），
+ * 取整到最近的 100 km 即为方格西北角；分幅向东、向南各多出约 9.8 km 与相邻分幅重叠，
+ * 每景只填自己的方格，影像接缝与前端画出的区域边界一致
+ */
+interface Square {
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+}
+const SQUARE = 100_000;
+function squareOf(scene: SceneMeta): Square {
+  const xMin = Math.round(scene.transform[2] / SQUARE) * SQUARE;
+  const yMax = Math.round(scene.transform[5] / SQUARE) * SQUARE;
+  return { xMin, xMax: xMin + SQUARE, yMin: yMax - SQUARE, yMax };
+}
+const inSquare = (q: Square, x: number, y: number) => x >= q.xMin && x < q.xMax && y > q.yMin && y <= q.yMax;
+
+/** 计算方格内未填像元落在某层上的最小读取窗口，完全不相交时返回 undefined */
+function windowFor(ux: Float32Array, uy: Float32Array, filled: Uint8Array, scene: SceneMeta, lv: Level, sq: Square): Win | undefined {
   const x0 = scene.transform[2];
   const y0 = scene.transform[5];
   let minC = Infinity;
@@ -130,7 +152,7 @@ function windowFor(ux: Float32Array, uy: Float32Array, filled: Uint8Array, scene
   let maxC = -Infinity;
   let maxR = -Infinity;
   for (let k = 0; k < filled.length; k++) {
-    if (filled[k]) continue;
+    if (filled[k] || !inSquare(sq, ux[k], uy[k])) continue;
     const c = (ux[k] - x0) / lv.res;
     const r = (y0 - uy[k]) / lv.res;
     if (c < minC) minC = c;
@@ -180,10 +202,17 @@ interface Prepared {
   res: number;
   x0: number;
   y0: number;
+  sq: Square;
 }
 
 /** 把瓦片未填像元换算到该景 UTM 坐标，并读取对应窗口的真彩色数据 */
-async function prepare(cache: DiskCache, scene: SceneMeta, grid: TileGrid, filled: Uint8Array): Promise<Prepared | undefined> {
+async function prepare(
+  cache: DiskCache,
+  scene: SceneMeta,
+  grid: TileGrid,
+  filled: Uint8Array,
+  signal?: AbortSignal,
+): Promise<Prepared | undefined> {
   const { size } = grid;
   const n = GRID + 1;
   const conv = converter(scene.epsg);
@@ -218,21 +247,23 @@ async function prepare(cache: DiskCache, scene: SceneMeta, grid: TileGrid, fille
   const groundPx = Math.hypot(gx[GRID] - gx[0], gy[GRID] - gy[0]) / size;
 
   const lv = pickLevel(await openCog(cache, scene), groundPx);
-  const win = windowFor(ux, uy, filled, scene, lv);
+  const sq = squareOf(scene);
+  const win = windowFor(ux, uy, filled, scene, lv, sq);
   if (!win) return undefined;
   const data = (await lv.image.readRasters({
     window: [win.c0, win.r0, win.c0 + win.w, win.r0 + win.h],
     samples: [0, 1, 2],
     interleave: true,
+    signal,
   })) as unknown as Uint8Array;
-  return { ux, uy, data, win, res: lv.res, x0: scene.transform[2], y0: scene.transform[5] };
+  return { ux, uy, data, win, res: lv.res, x0: scene.transform[2], y0: scene.transform[5], sq };
 }
 
-/** 把一景的有效像元写入尚未填充的位置，返回新填充的像元数 */
+/** 把一景在其方格内的有效像元写入尚未填充的位置，返回新填充的像元数 */
 function composite(p: Prepared, out: Uint8Array, filled: Uint8Array): number {
   let added = 0;
   for (let k = 0; k < filled.length; k++) {
-    if (filled[k]) continue;
+    if (filled[k] || !inSquare(p.sq, p.ux[k], p.uy[k])) continue;
     const c = Math.floor((p.ux[k] - p.x0) / p.res) - p.win.c0;
     const r = Math.floor((p.y0 - p.uy[k]) / p.res) - p.win.r0;
     if (c < 0 || r < 0 || c >= p.win.w || r >= p.win.h) continue;
@@ -255,6 +286,7 @@ function composite(p: Prepared, out: Uint8Array, filled: Uint8Array): number {
 /**
  * 按优先级逐景合成 Web 墨卡托瓦片并编码为 WebP，瓦片内没有任何影像时返回 undefined。
  * 每批并发读取若干景以摊薄回源延迟，读完后仍按原顺序写入，排在前面的景优先占据像元
+ * signal 中止后不再读取后续批次，抛出 AbortError；传入 timing 时累计各阶段耗时
  */
 export async function renderTile(
   cache: DiskCache,
@@ -263,6 +295,8 @@ export async function renderTile(
   y: number,
   size: number,
   scenes: SceneMeta[],
+  signal?: AbortSignal,
+  timing?: RenderTiming,
 ): Promise<Buffer | undefined> {
   const grid = tileGrid(z, x, y, size);
   const total = size * size;
@@ -271,14 +305,26 @@ export async function renderTile(
   let remaining = total;
 
   for (let s = 0; s < scenes.length && remaining > 0; s += BATCH) {
+    // 请求方都已离开时在读下一批景之前停下；批内读取在发起新的分块请求前也会停下，已发出的回源请求照常完成并写入分块缓存
+    signal?.throwIfAborted();
     const batch = scenes.slice(s, s + BATCH);
-    const prepared = await Promise.all(batch.map((sc) => prepare(cache, sc, grid, filled)));
+    const t = performance.now();
+    const prepared = await Promise.all(batch.map((sc) => prepare(cache, sc, grid, filled, signal)));
+    const read = performance.now();
     for (const p of prepared) {
       if (p && remaining > 0) remaining -= composite(p, out, filled);
     }
+    if (timing) {
+      timing.read += read - t;
+      timing.composite += performance.now() - read;
+      timing.scenes += prepared.filter(Boolean).length;
+    }
   }
   if (remaining === total) return undefined;
-  return sharp(out, { raw: { width: size, height: size, channels: 4 } })
+  const t = performance.now();
+  const webp = await sharp(out, { raw: { width: size, height: size, channels: 4 } })
     .webp({ quality: WEBP_QUALITY, alphaQuality: 100 })
     .toBuffer();
+  if (timing) timing.encode += performance.now() - t;
+  return webp;
 }

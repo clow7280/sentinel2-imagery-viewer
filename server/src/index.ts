@@ -2,9 +2,10 @@ import { serve } from '@hono/node-server';
 import { type Context, Hono } from 'hono';
 import net from 'node:net';
 import path from 'node:path';
-import { type CacheStatus, DiskCache, type Entry, Inflight, Semaphore } from './cache';
+import { type CacheStatus, DiskCache, type Entry, Semaphore, SharedTask } from './cache';
 import { listCachedScenes, rebuildSceneIndex } from './cog';
 import { config } from './config';
+import { recordRender, recordRenderEnd, type RenderTiming } from './metrics';
 import { renderTile } from './render';
 import { resolveScenes, SCENE_ID_RE, STAC_URL } from './scenes';
 import { cached, upstreamFetch, UpstreamError } from './upstream';
@@ -52,6 +53,8 @@ app.use('/api/*', async (c, next) => {
 });
 
 app.onError((err, c) => {
+  // 客户端已断开，例如地图移走后取消的瓦片请求，不必记录也无人接收响应
+  if (c.req.raw.signal.aborted) return new Response(null, { status: 499 });
   if (err instanceof UpstreamError) return c.text(err.message, err.status as 400);
   console.error(err);
   return c.text('服务器内部错误', 500);
@@ -162,21 +165,24 @@ app.get('/api/seamark/:z/:x/:y', async (c) => {
 });
 
 /** 影像瓦片的缩放范围，与前端栅格源的 minzoom、maxzoom 一致 */
-const S2_MIN_ZOOM = 7;
+const S2_MIN_ZOOM = 4;
 const S2_MAX_ZOOM = 15;
 /** 单个瓦片最多参与合成的景数 */
 const S2_MAX_SCENES = 24;
 /**
  * 同时渲染的瓦片数。渲染本身只需几十毫秒，冷启动时主要在等东京到美西的回源，
- * 并发高一些才能让回源等待相互重叠；解码在 zlib 线程池中进行
+ * 并发能让回源等待相互重叠；解码在 zlib 线程池中进行。
+ * 每路渲染会同时解码多个 1024² 的 COG 内部瓦片，实测 12 路时存活 Buffer 峰值约 410 MB，
+ * 逼近 systemd 的 700M 内存上限，6 路时约 300 MB，冷加载耗时基本不变，但成批请求排队 p95 达 3 秒，
+ * 取 8 路折中
  */
-const renderLimit = new Semaphore(12);
-const renderInflight = new Inflight<Entry>();
+const renderLimit = new Semaphore(8);
+const renderTasks = new SharedTask<Entry>();
 const EMPTY = Buffer.alloc(0);
 
 /**
  * Sentinel-2 影像瓦片：按景编号读取 COG，在服务端重投影合成为 WebP。
- * ids 按合成优先级排列，同一瓦片与景序列的结果不变，长期缓存；没有影像时返回 204
+ * ids 按合成优先级排列，每景只填自己的 MGRS 方格，同一瓦片与景序列的结果不变，长期缓存；没有影像时返回 204
  */
 app.get('/api/s2/:z/:x/:y', async (c) => {
   const { z: zs, x: xs, y: ys } = c.req.param();
@@ -193,23 +199,46 @@ app.get('/api/s2/:z/:x/:y', async (c) => {
     return c.text('景编号无效', 400);
   }
   const size = m[2] ? 512 : 256;
-  const key = `s2:${size}:${z}/${x}/${y}:${ids.join(',')}`;
+  // 键名中的 sq 表示按方格裁切，与之前不裁切的渲染结果区分
+  const key = `s2sq:${size}:${z}/${x}/${y}:${ids.join(',')}`;
   const hit = await caches.tiles.get(key);
   const entry =
     hit ??
-    (await renderInflight.run(key, async () => {
-      const scenes = await resolveScenes(caches.meta, ids);
-      const body = await renderLimit.run(() => renderTile(caches.cog, z, x, y, size, scenes));
-      const e: Entry = { status: body ? 200 : 204, contentType: 'image/webp', storedAt: Date.now(), body: body ?? EMPTY };
-      await caches.tiles.put(key, e);
-      return e;
+    (await renderTasks.run(key, c.req.raw.signal, async (signal) => {
+      const t0 = performance.now();
+      const timing: RenderTiming = { read: 0, composite: 0, encode: 0, scenes: 0 };
+      let t1 = t0;
+      let t2 = t0;
+      try {
+        const scenes = await resolveScenes(caches.meta, ids);
+        t1 = performance.now();
+        // 排队期间请求方都已离开时不再开始渲染
+        const body = await renderLimit.run(() => {
+          signal.throwIfAborted();
+          t2 = performance.now();
+          return renderTile(caches.cog, z, x, y, size, scenes, signal, timing);
+        });
+        recordRender({
+          ...timing,
+          tile: `${z}/${x}/${y}${size === 512 ? '@2x' : ''}`,
+          resolve: t1 - t0,
+          queue: t2 - t1,
+          render: performance.now() - t2,
+        });
+        const e: Entry = { status: body ? 200 : 204, contentType: 'image/webp', storedAt: Date.now(), body: body ?? EMPTY };
+        await caches.tiles.put(key, e);
+        return e;
+      } catch (err) {
+        recordRenderEnd(signal.aborted);
+        throw err;
+      }
     }));
   const headers = { 'Cache-Control': 'public, max-age=604800, immutable', 'X-Cache': hit ? 'HIT' : 'MISS' };
   if (entry.status === 204) return c.body(null, 204, headers);
   return c.body(new Uint8Array(entry.body), 200, { ...headers, 'Content-Type': 'image/webp' });
 });
 
-// 服务器已缓存影像的景编号，前端据此绘制影像边界
+// 服务器已缓存影像的景编号，前端据此在缩小后仍显示这些区域的影像
 app.get('/api/cached-scenes', (c) =>
   c.json(listCachedScenes(), 200, { 'Cache-Control': 'public, max-age=60' }),
 );

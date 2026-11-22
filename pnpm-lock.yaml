@@ -44,6 +44,9 @@ importers:
       maplibre-gl:
         specifier: ^6.19.0
         version: 6.19.0
+      mgrs:
+        specifier: 2.2.0
+        version: 2.2.0
       pmtiles:
         specifier: 4.5.0
         version: 4.5.0
@@ -936,6 +939,9 @@ packages:
   mgrs@1.0.0:
     resolution: {integrity: sha512-awNbTOqCxK1DBGjalK3xqWIstBZgN6fxsMSiXLs9/spqWkF2pAhb2rrYCFSsr1/tT7PhcDGjZndG8SWYn0byYA==}
 
+  mgrs@2.2.0:
+    resolution: {integrity: sha512-BHeewhEJ1n2MOFKvGXFPMxgfczWArFGltBYSZ+JTzlNfHSwJ7gEsXGXFjaU619yLmpmtyoLHu+d8Sd6ACsd0QA==}
+
   minimist@1.2.8:
     resolution: {integrity: sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA==}
 
@@ -1753,6 +1759,8 @@ snapshots:
       - use-sync-external-store
 
   mgrs@1.0.0: {}
+
+  mgrs@2.2.0: {}
 
   minimist@1.2.8: {}
 

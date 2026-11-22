@@ -56,7 +56,8 @@ function touchesTile(s: Scene, b: [number, number, number, number]): boolean {
 
 /**
  * 影像瓦片由后端渲染为 WebP：前端只挑出与瓦片相交的景，按合成优先级把景编号交给后端。
- * 高分屏请求 512 像素的 @2x 瓦片；没有影像时后端返回 204，按透明瓦片处理
+ * 高分屏请求 512 像素的 @2x 瓦片；没有影像时后端返回 204，按透明瓦片处理。
+ * sq=1 后端不读取，只让浏览器缓存与按方格裁切之前的同名瓦片区分
  */
 export function registerProtocol(): void {
   addProtocol(PROTOCOL, async (params, abortController) => {
@@ -72,7 +73,7 @@ export function registerProtocol(): void {
     stats.requested++;
     const t0 = performance.now();
     try {
-      const resp = await fetch(`/api/s2/${z}/${x}/${y}${retina}.webp?ids=${ids}`, { signal: abortController.signal });
+      const resp = await fetch(`/api/s2/${z}/${x}/${y}${retina}.webp?ids=${ids}&sq=1`, { signal: abortController.signal });
       if (!resp.ok && resp.status !== 204) throw new Error(`影像瓦片渲染失败：HTTP ${resp.status}`);
       const data = resp.status === 204 ? new ArrayBuffer(0) : await resp.arrayBuffer();
       stats.done++;

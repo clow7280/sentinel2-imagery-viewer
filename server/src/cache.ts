@@ -161,3 +161,34 @@ export class Inflight<T> {
     return p;
   }
 }
+
+/**
+ * 同一键的并发请求共享一次任务，并记录等待的请求方；
+ * 所有请求方都中止后取消任务，例如用户把地图移走后，已不需要的瓦片渲染不再占用渲染并发与回源带宽
+ */
+export class SharedTask<T> {
+  private map = new Map<string, { promise: Promise<T>; waiters: number; ac: AbortController }>();
+
+  run(key: string, signal: AbortSignal, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    let task = this.map.get(key);
+    // 已取消但尚未结束的任务不再复用
+    if (!task || task.ac.signal.aborted) {
+      const ac = new AbortController();
+      const created = { ac, waiters: 0, promise: fn(ac.signal) };
+      created.promise
+        .finally(() => {
+          if (this.map.get(key) === created) this.map.delete(key);
+        })
+        .catch(() => {});
+      this.map.set(key, created);
+      task = created;
+    }
+    const current = task;
+    current.waiters++;
+    const leave = () => {
+      if (--current.waiters === 0) current.ac.abort();
+    };
+    signal.addEventListener('abort', leave, { once: true });
+    return current.promise.finally(() => signal.removeEventListener('abort', leave));
+  }
+}
