@@ -3,7 +3,7 @@ import { sceneContains } from './composition';
 import type { Scene } from './types';
 
 export const PROTOCOL = 's2';
-/** 单个瓦片最多参与合成的景数，与后端上限一致 */
+/** 后端单次请求最多参与合成的景数，与后端上限一致 */
 const MAX_SCENES_PER_TILE = 24;
 const TILE_SAMPLES = 6;
 
@@ -55,32 +55,68 @@ function touchesTile(s: Scene, b: [number, number, number, number]): boolean {
 }
 
 /**
+ * 把瓦片内的景按 MGRS 分幅分组，再装进每组不超过 MAX_SCENES_PER_TILE 景的请求。
+ * 同一分幅的首选景与补缺测景必须在同一请求内，后端才能按优先级合成；
+ * 不同分幅各填自己的方格、互不重叠，可以分开渲染再拼合。单个分幅的景数超过上限时截掉排在后面的补缺测景
+ */
+function packByRegion(scenes: Scene[]): Scene[][] {
+  const regions = new Map<string, Scene[]>();
+  for (const s of scenes) {
+    const list = regions.get(s.tile) ?? [];
+    list.push(s);
+    regions.set(s.tile, list);
+  }
+  const batches: Scene[][] = [];
+  let cur: Scene[] = [];
+  for (const list of regions.values()) {
+    const group = list.slice(0, MAX_SCENES_PER_TILE);
+    if (cur.length + group.length > MAX_SCENES_PER_TILE) {
+      batches.push(cur);
+      cur = [];
+    }
+    cur.push(...group);
+  }
+  if (cur.length) batches.push(cur);
+  return batches;
+}
+
+/** 请求一组景合成的瓦片，没有影像时返回 undefined */
+async function fetchPart(path: string, scenes: Scene[], signal: AbortSignal) {
+  const ids = scenes.map((s) => s.id).join(',');
+  const resp = await fetch(`${path}?ids=${ids}&sq=1`, { signal });
+  if (!resp.ok && resp.status !== 204) throw new Error(`影像瓦片渲染失败：HTTP ${resp.status}`);
+  const data = resp.status === 204 ? undefined : await resp.arrayBuffer();
+  return { data, hit: resp.headers.get('x-cache') === 'HIT' };
+}
+
+/**
  * 影像瓦片由后端渲染为 WebP：前端只挑出与瓦片相交的景，按合成优先级把景编号交给后端。
  * 高分屏请求 512 像素的 @2x 瓦片；没有影像时后端返回 204，按透明瓦片处理。
+ * 缩小后一个瓦片可能覆盖几十个分幅，超出后端单次景数上限时按分幅拆成多次请求，在浏览器中拼合。
  * sq=1 后端不读取，只让浏览器缓存与按方格裁切之前的同名瓦片区分
  */
 export function registerProtocol(): void {
   addProtocol(PROTOCOL, async (params, abortController) => {
     const [, , , z, x, y] = params.url.split('/');
     const b = tileBounds(Number(z), Number(x), Number(y));
-    const scenes = stack.filter((s) => touchesTile(s, b)).slice(0, MAX_SCENES_PER_TILE);
+    const scenes = stack.filter((s) => touchesTile(s, b));
     if (!scenes.length) return { data: new ArrayBuffer(0) };
 
     const retina = devicePixelRatio >= 1.5 ? '@2x' : '';
-    const ids = scenes.map((s) => s.id).join(',');
+    const path = `/api/s2/${z}/${x}/${y}${retina}.webp`;
     if (inflight === 0) Object.assign(stats, { requested: 0, done: 0, hits: 0, failed: 0, canceled: 0, bytes: 0, ms: 0 });
     inflight++;
     stats.requested++;
     const t0 = performance.now();
     try {
-      const resp = await fetch(`/api/s2/${z}/${x}/${y}${retina}.webp?ids=${ids}&sq=1`, { signal: abortController.signal });
-      if (!resp.ok && resp.status !== 204) throw new Error(`影像瓦片渲染失败：HTTP ${resp.status}`);
-      const data = resp.status === 204 ? new ArrayBuffer(0) : await resp.arrayBuffer();
+      const parts = await Promise.all(packByRegion(scenes).map((batch) => fetchPart(path, batch, abortController.signal)));
       stats.done++;
-      stats.bytes += data.byteLength;
+      stats.bytes += parts.reduce((n, p) => n + (p.data?.byteLength ?? 0), 0);
       stats.ms += performance.now() - t0;
-      if (resp.headers.get('x-cache') === 'HIT') stats.hits++;
-      return { data };
+      if (parts.every((p) => p.hit)) stats.hits++;
+      const images = parts.flatMap((p) => (p.data ? [p.data] : []));
+      if (images.length <= 1) return { data: images[0] ?? new ArrayBuffer(0) };
+      return { data: await mergeImages(images) };
     } catch (err) {
       if (abortController.signal.aborted) stats.canceled++;
       else stats.failed++;
@@ -89,6 +125,21 @@ export function registerProtocol(): void {
       inflight--;
     }
   });
+}
+
+/**
+ * 把各组渲染结果叠成一张瓦片。各组只覆盖自己的分幅方格，仅在 UTM 带交界处可能重叠；
+ * 从最后一组画起，排在前面的组后画、覆盖在上，与单次请求时前面的景优先占据像元一致
+ */
+async function mergeImages(images: ArrayBuffer[]): Promise<ImageBitmap> {
+  const bitmaps = await Promise.all(images.map((d) => createImageBitmap(new Blob([d], { type: 'image/webp' }))));
+  const canvas = new OffscreenCanvas(bitmaps[0].width, bitmaps[0].height);
+  const ctx = canvas.getContext('2d')!;
+  for (const bm of bitmaps.toReversed()) {
+    ctx.drawImage(bm, 0, 0);
+    bm.close();
+  }
+  return canvas.transferToImageBitmap();
 }
 
 export function tileStats(): TileStats {
